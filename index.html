@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+   <meta charset="UTF-8">
+   <meta http-equiv="X-UA-Compatible" content="IE=edge">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <style>
+      body {
+         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+         background-color: #a59d9d;
+         margin: 0;
+         padding: 0;
+      }
+
+      nav {
+         background-color: #007bffb2;
+         padding: 10px;
+         position: flex;
+         top: 0;
+         left: 0;
+         width: 100%;
+         text-align: center;
+         color: #ffffff;
+      }
+
+      nav button {
+         background-color: #04305f;
+         color: #ffffff;
+         border: none;
+         padding: 10px 20px;
+         margin: 10px 10px;
+         font-size: 16px;
+         cursor: pointer;
+         border-radius: 5px; 
+      }
+
+      #welcomeMessage {
+         color: #ffffff;
+         font-size: 18px;
+         margin: 0;
+      }
+
+      main {
+         margin-top: 60px;
+         text-align: center;
+         display: flex;
+         justify-content: center;
+      }
+
+      table {
+         border-collapse: collapse;
+         width: 80%;
+         padding-left: 360px;
+         padding-bottom: 50px;
+      }
+
+      th, td {
+         border: 1px solid #dddddd;
+         text-align: left;
+         padding: 8px;
+      }
+
+      th {
+         background-color: #007bffb2;
+         color: #ffffff;
+      }
+
+      td {
+         background-color: #ffffff;
+      }
+
+      #message {
+         color: green;
+         margin-top: 20px;
+         font-size: 18px;
+      }
+   </style>
+</head>
+<body>
+   <nav>
+      <button id="loginButton">Login</button>
+      <button id="logoutButton" style="display:none;">Logout</button>
+      <button id="getCasesButton" style="display:none;">Obtener Casos</button>
+      <p id="welcomeMessage"></p>
+   </nav>
+
+   <main>
+      <div id="message"></div>
+      <table id="casesTable" style="display:none;">
+         <thead><tr><th>Titulo</th><th>Descripcion</th><th>Email</th></tr></thead>
+         <tbody id="casesTableBody"></tbody>
+      </table>
+   </main>
+
+   <script src="https://alcdn.msauth.net/browser/2.28.1/js/msal-browser.min.js"></script>
+   <script>
+      const redirectUrl = "http://localhost:5500/index.html";
+      const webAPIEndpoint = baseUrl + "/api/data/v9.2";
+
+      const msalConfig = {
+         auth: {
+            clientId: clientId,
+            authority: "https://login.microsoftonline.com/" + tenantId,
+            redirectUri: redirectUrl,
+         },
+         cache: {
+            cacheLocation: "sessionStorage"
+         },
+         system: {
+            loggerOptions: {
+               loggerCallback: (level, message, containsPii) => {
+                  if (containsPii) {
+                     return;
+                  }
+                  switch (level) {
+                     case msal.LogLevel.Error:
+                        console.error(message);
+                        return;
+                     case msal.LogLevel.Info:
+                        console.info(message);
+                        return;
+                     case msal.LogLevel.Verbose:
+                        console.debug(message);
+                        return;
+                     case msal.LogLevel.Warning:
+                        console.warn(message);
+                        return;
+                  }
+               }
+            }
+         }
+      };
+
+      let myMSALObj;
+      let username;
+
+      function init() {
+         myMSALObj = new msal.PublicClientApplication(msalConfig);
+         selectAccount();
+      }
+
+      function selectAccount() {
+         const currentAccounts = myMSALObj.getAllAccounts();
+         if (currentAccounts.length === 0) {
+            return;
+         } else if (currentAccounts.length > 1) {
+            console.warn("Multiple accounts detected.");
+         } else if (currentAccounts.length === 1) {
+            username = currentAccounts[0].username;
+            showWelcomeMessage(currentAccounts[0]);
+         }
+      }
+
+      function signIn() {
+         myMSALObj.loginPopup({
+            scopes: ["User.Read", baseUrl + "/user_impersonation"]
+         })
+         .then(response => {
+            if (response !== null) {
+               showWelcomeMessage(response);
+            } else {
+               selectAccount();
+            }
+         })
+         .catch(error => {
+            console.error(error);
+         });
+      }
+
+      function showWelcomeMessage(account) {
+         const userDisplayName = account.name;
+         welcomeMessage.innerHTML = `Bienvenido ${userDisplayName}`;
+         loginButton.style.display = "none";
+         logoutButton.style.display = "block";
+         getCasesButton.style.display = "block";
+      }
+
+      function signOut() {
+         const logoutRequest = {
+            account: myMSALObj.getAccountByUsername(username),
+            postLogoutRedirectUri: msalConfig.auth.redirectUri,
+            mainWindowRedirectUri: msalConfig.auth.redirectUri
+         };
+
+         myMSALObj.logoutPopup(logoutRequest);
+      }
+
+      function getTokenPopup(request) {
+         request.account = myMSALObj.getAccountByUsername(username);
+
+         return myMSALObj.acquireTokenSilent(request)
+            .catch(error => {
+               console.warn("Silent token acquisition fails. Acquiring token using popup");
+               if (error instanceof msal.InteractionRequiredAuthError) {
+                  return myMSALObj.acquireTokenPopup(request)
+                     .then(tokenResponse => {
+                        console.log(tokenResponse);
+                        return tokenResponse;
+                     })
+                     .catch(error => {
+                        console.error(error);
+                     });
+               } else {
+                  console.warn(error);
+               }
+            });
+      }
+
+      function getCases(callback) {
+         getTokenPopup({
+            scopes: [baseUrl + "/.default"]
+         })
+         .then(response => {
+            getDataverse("incidents?$select=title,description,_ownerid_value", response.accessToken, callback);
+         })
+         .catch(error => {
+            console.error(error);
+         });
+      }
+
+      function getDataverse(url, token, callback) {
+         const headers = new Headers();
+         const bearer = `Bearer ${token}`;
+         headers.append("Authorization", bearer);
+         headers.append("Accept", "application/json");
+         headers.append("OData-MaxVersion", "4.0");
+         headers.append("OData-Version", "4.0");
+
+         const options = {
+            method: "GET",
+            headers: headers
+         };
+
+         console.log('GET Request made to Dataverse at: ' + new Date().toString());
+
+         fetch(webAPIEndpoint + "/" + url, options)
+            .then(response => response.json())
+            .then(response => callback(response))
+            .catch(error => console.log(error));
+      }
+
+      function writeCases(data) {
+   const casesTable = document.getElementById("casesTable");
+   const casesTableBody = document.getElementById("casesTableBody");
+
+   data.value.forEach(function (incident) {
+      var title = incident.title;
+      var description = incident.description;
+      var ownerId = incident._ownerid_value;
+
+      // Usa directamente el nombre del usuario almacenado en 'username'
+      var ownerName = username;
+
+      var titleCell = document.createElement("td");
+      titleCell.textContent = title;
+
+      var descriptionCell = document.createElement("td");
+      descriptionCell.textContent = description;
+
+      var ownerNameCell = document.createElement("td");
+      ownerNameCell.textContent = ownerName;
+
+      var row = document.createElement("tr");
+
+      row.appendChild(titleCell);
+      row.appendChild(descriptionCell);
+      row.appendChild(ownerNameCell);
+
+      casesTableBody.appendChild(row);
+   });
+
+   casesTable.style.display = "block";
+   getCasesButton.style.display = "none";
+}
+
+
+
+      document.getElementById("loginButton").addEventListener("click", signIn);
+      document.getElementById("logoutButton").addEventListener("click", signOut);
+      document.getElementById("getCasesButton").addEventListener("click", () => getCases(writeCases));
+
+      init();
+   </script>
+</body>
+</html>
